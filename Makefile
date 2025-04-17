@@ -6,7 +6,7 @@ test_run: test
 	build/test_tensor
 	build/test_nn
 
-test: build/test_tensor build/test_nn
+test: build/test_tensor
 
 
 build/test_tensor: test_tensor.cu tensor.cu

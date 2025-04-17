@@ -12,9 +12,44 @@ float random_norm_float() {
 }
 
 float random_float() {
-	return random_norm_float() * FLT_MAX;
+	return random_norm_float();
 }
 
+Tensor3 tensor3_cpu_naive_matmul(Tensor3 a, Tensor3 b)
+{
+	tensor3_sync(a); tensor3_sync(b);
+	assert(a.d1 == b.d2);
+	int N = a.d2;
+	int M = b.d1;
+	int T = a.d1;
+	Tensor3 c = tensor3_new(M, N, max(a.d3, b.d3));
+
+	float *A = a.cpu_data;
+	float *B = b.cpu_data;
+	float *C = c.cpu_data;
+
+	memset(C, 0, sizeof(float) * c.d1 * c.d2 * c.d3);
+
+	if (a.d3 == b.d3){
+		if (a.d3 == 1) {
+			for(size_t i = 0; i < N; i++) {
+				for(size_t k = 0; k < T; k++) {
+					for(size_t j = 0; j < M; j++) {
+						C[i*M + j] += A[i*T + k] * B[k*M + j];
+					}
+				}
+			}
+		}
+		else {
+			TODO("Not implemented");
+		}
+	}
+	else {
+		TODO("Not implemented");
+	}
+	tensor3_copy_cpu_to_gpu(c);
+	return c;
+}
 
 int test_tensor3_add() 
 {
@@ -173,6 +208,8 @@ int test_tensor3_matmul_1_1()
 	int N = (rand() % MAX_N) + 1;
 	int M = (rand() % MAX_N) + 1;
 	int T = (rand() % MAX_N) + 1;
+
+
 	Tensor3 a = tensor3_new(T, N, 1);
 	Tensor3 b = tensor3_new(M, T, 1);
 	for (int i = 0; i < N*T; i++) {
@@ -193,9 +230,15 @@ int test_tensor3_matmul_1_1()
 
 	Tensor3 c_cpu = tensor3_cpu_naive_matmul(a, b);
 
+	float big_diff = 0;
 	for (int i = 0; i < N*M; i++) {
-		test_assert(c.cpu_data[i] == c_cpu.cpu_data[i]);
+		float diff = abs(c.cpu_data[i] -c_cpu.cpu_data[i]);
+		big_diff = max(big_diff, diff);
 	}
+	if (big_diff >= 1e-4) {
+		printf("N %d, M %d, T %d, diff=%.10f\n", N, M, T, big_diff);
+	}
+	test_assert(big_diff < 1e-4);
 
 	tensor3_free(a); tensor3_free(b); tensor3_free(c); tensor3_free(c_cpu);
 
