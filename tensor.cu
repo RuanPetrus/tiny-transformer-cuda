@@ -4,6 +4,7 @@
 #define TODO(message) do { fprintf(stderr, "%s:%d: TODO: %s\n", __FILE__, __LINE__, message); abort(); } while(0)
 #define ERROR(...) do { fprintf(stderr, __VA_ARGS__); abort(); } while(0)
 #define KEY(i3, i2, i1, d3, d2, d1) (d3*0 + i3*d2*d1 + i2*d1 + i1)
+#define SWAP(a, b, T) { T temp = a; a = b; b = temp; }
 
 #define THREAD_PER_BLOCK_X (1 << 4)
 #define THREAD_PER_BLOCK_Y (1 << 3)
@@ -67,6 +68,19 @@ __global__ void kernel_exp(float *c, float * a,
 	}
 }
 
+__global__ void kernel_log(float *c, float * a,
+						   int cd1, int cd2, int cd3) 
+{
+	int ci3 = blockIdx.z * blockDim.z + threadIdx.z;
+	int ci2 = blockIdx.y * blockDim.y + threadIdx.y;
+	int ci1 = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (ci3 < cd3 && ci2 < cd2 && ci1 < cd1) {
+		c[KEY(ci3, ci2, ci1, cd3, cd2, cd1)] = 
+		log(a[KEY(ci3, ci2, ci1, cd3, cd2, cd1)]);
+	}
+}
+
 /* === re-shape Ops  === */
 
 __global__ void kernel_sum(float *c, float *a, 
@@ -117,6 +131,37 @@ __global__ void kernel_broadcast(float *c, float *a,
 	}
 }
 
+// op is the dimension that does not change
+__global__ void kernel_transpose(float *c, float *a, 
+								int cd1, int cd2, int cd3,
+								int op) 
+{
+	int ci3 = blockIdx.z * blockDim.z + threadIdx.z;
+	int ci2 = blockIdx.y * blockDim.y + threadIdx.y;
+	int ci1 = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (ci3 < cd3 && ci2 < cd2 && ci1 < cd1) {
+		int ai1 = ci1, ai2 = ci2, ai3 = ci3;
+		int ad1 = cd1, ad2 = cd2, ad3 = cd3;
+		if (op == 3) {
+			SWAP(ci1, ci2, int);
+			SWAP(cd1, cd2, int);
+		}
+		else if (op == 2) {
+			SWAP(ci1, ci3, int);
+			SWAP(cd1, cd3, int);
+		}
+		else if (op == 1) {
+			SWAP(ci2, ci3, int);
+			SWAP(cd2, cd3, int);
+		}
+		else {
+			// TODO: Error message
+		}
+		c[KEY(ci3, ci2, ci1, cd3, cd2, cd1)] = a[KEY(ai3, ai2, ai1, ad3, ad2, ad1)];
+	}
+}
+
 
 /* === Mat mul  === */
 __global__ void kernel_matmul(float *c, float *a, float *b, 
@@ -139,6 +184,20 @@ __global__ void kernel_matmul(float *c, float *a, float *b,
 				   b[KEY(ci3, bi2, bi1, bd3, bd2, bd1)];
 		}
 		c[KEY(ci3, ci2, ci1, cd3, cd2, cd1)] = sum;
+	}
+}
+
+/* === Scalar Ops  === */
+__global__ void kernel_mul_scalar(float *c, float * a, float b,
+						   int cd1, int cd2, int cd3) 
+{
+	int ci3 = blockIdx.z * blockDim.z + threadIdx.z;
+	int ci2 = blockIdx.y * blockDim.y + threadIdx.y;
+	int ci1 = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (ci3 < cd3 && ci2 < cd2 && ci1 < cd1) {
+		c[KEY(ci3, ci2, ci1, cd3, cd2, cd1)] = 
+		a[KEY(ci3, ci2, ci1, cd3, cd2, cd1)] * b; 
 	}
 }
 
@@ -236,7 +295,7 @@ void tensor3_show(Tensor3 t)
 		for (int j = 0; j < t.d2; j++) {
 			printf("[ ");
 			for (int i = 0; i < t.d1; i++) {
-				printf("%.2f ", t.cpu_data[KEY(k, j, i, t.d3, t.d2, t.d1)]);
+				printf("%.4f ", t.cpu_data[KEY(k, j, i, t.d3, t.d2, t.d1)]);
 			}
 			printf("] ");
 		}
@@ -268,7 +327,6 @@ bool tensor3_is_summable(Tensor3 a, int d1, int d2, int d3)
 			(a.d3 == d3 || d3 == 1));
 }
 
-// Broadcast A tensor to dimensions (d1, d2, d3)
 Tensor3 tensor3_broadcast(Tensor3 a, int d1, int d2, int d3) 
 {
 	assert(tensor3_is_broadcastable(a, d1, d2, d3));
@@ -316,6 +374,62 @@ Tensor3 tensor3_sum(Tensor3 a, int d1, int d2, int d3)
 		a.d1, a.d2, a.d3  // a dimensions
 	);             
 
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+
+	tensor3_unsync(&c);
+	return c;
+}
+
+// op(1) == (1, 2)
+// op(2) == (1, 3)
+// op(3) == (2, 3)
+Tensor3 tensor3_transpose(Tensor3 a, int dx, int dy) 
+{
+	tensor3_sync(a);
+	int op = dx ^ dy;
+	int d1 = a.d1, d2 = a.d2, d3 = a.d3;
+	if (op == 3) {
+		SWAP(d1, d2, int);
+	}
+	else if (op == 2) {
+		SWAP(d1, d3, int);
+	}
+	else if (op == 1) {
+		SWAP(d2, d3, int);
+	}
+	Tensor3 c = tensor3_new(d1, d2, d3);
+
+	dim3 threads_per_block(THREAD_PER_BLOCK_X, THREAD_PER_BLOCK_Y, THREAD_PER_BLOCK_Z);
+	dim3 num_blocks(
+		int_ceil(a.d1, threads_per_block.x),
+		int_ceil(a.d2, threads_per_block.y),
+		int_ceil(a.d3, threads_per_block.z)
+	);
+
+	kernel_transpose<<<num_blocks, threads_per_block>>>(
+		c.data, a.data, 
+		a.d1, a.d2, a.d3,
+		op          
+	);             
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+
+	tensor3_unsync(&c);
+	return c;
+}
+
+Tensor3 tensor3_view(Tensor3 a, int d1, int d2, int d3) 
+{
+	assert(d1*d2*d3 == a.d1*a.d2*a.d3);
+	Tensor3 c = tensor3_new(d1, d2, d3);
+
+	cudaMemcpy(c.data, a.data, d1*d2*d3*sizeof(float), cudaMemcpyDeviceToDevice);
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) {
 		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
@@ -465,6 +579,31 @@ Tensor3 tensor3_exp(Tensor3 a)
 	return c;
 }
 
+Tensor3 tensor3_log(Tensor3 a) 
+{
+	tensor3_sync(a);
+	Tensor3 c = tensor3_new(a.d1, a.d2, a.d3);
+	dim3 threads_per_block(THREAD_PER_BLOCK_X, THREAD_PER_BLOCK_Y, THREAD_PER_BLOCK_Z);
+	dim3 num_blocks(
+		int_ceil(c.d1, threads_per_block.x),
+		int_ceil(c.d2, threads_per_block.y),
+		int_ceil(c.d3, threads_per_block.z)
+	);
+
+	kernel_log<<<num_blocks, threads_per_block>>>(
+		c.data, a.data,
+		c.d1, c.d2, c.d3
+	);             
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+
+	tensor3_unsync(&c);
+	return c;
+}
+
 Tensor3 tensor3_matmul(Tensor3 a, Tensor3 b) 
 {
 	tensor3_sync(a); tensor3_sync(b);
@@ -494,6 +633,32 @@ Tensor3 tensor3_matmul(Tensor3 a, Tensor3 b)
 		c.data, a.data, b.data,
 		c.d1, c.d2, c.d3,
 		a.d1
+	);             
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+
+	tensor3_unsync(&c);
+	return c;
+}
+
+Tensor3 tensor3_mul_scalar(Tensor3 a, float b) 
+{
+	tensor3_sync(a);
+	Tensor3 c = tensor3_new(a.d1, a.d2, a.d3);
+
+	dim3 threads_per_block(THREAD_PER_BLOCK_X, THREAD_PER_BLOCK_Y, THREAD_PER_BLOCK_Z);
+	dim3 num_blocks(
+		int_ceil(c.d1, threads_per_block.x),
+		int_ceil(c.d2, threads_per_block.y),
+		int_ceil(c.d3, threads_per_block.z)
+	);
+
+	kernel_mul_scalar<<<num_blocks, threads_per_block>>>(
+		c.data, a.data, b,
+		c.d1, c.d2, c.d3
 	);             
 
 	cudaError_t err = cudaGetLastError();

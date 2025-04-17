@@ -79,6 +79,95 @@ int test_tensor3_add()
 	return true;
 }
 
+int test_tensor3_softmax()
+{
+	{
+		float x_data[] = {
+		-0.9839,  0.2896, -0.6639,  0.3162,  1.1602, -0.2941, -1.8926,  1.0604,
+        -0.6406,  1.3370, -0.7871,  1.1252, -1.7588, -0.2872, -0.7927, -0.8530,
+        -0.7520,  0.7507, -1.1152,  0.4808,  0.3390, -0.4116,  0.7865, -0.0073,
+         0.6995, -0.3520,  0.5569,  0.4294,  0.7227,  0.3441, -0.6944,  0.9668,
+        -2.0168,  0.0365, -2.0879,  1.4886,  3.6720,  1.1824, -1.8315, -0.5604,
+         0.6067, -0.3952,  0.4251, -1.0766,  1.2391,  0.3002, -1.5661, -1.4361,
+        -0.2195, -0.6596, -0.1858,  0.8256,  0.6159,  0.2622, -1.7042,  0.0517,
+         0.9444, -1.3036,  0.8708, -0.8818
+		};
+		float expected_e[] = {
+		0.3739,  1.3359,  0.5149,  1.3720,  3.1906,  0.7452,  0.1507,  2.8876,
+        0.5270,  3.8076,  0.4552,  3.0808,  0.1722,  0.7504,  0.4526,  0.4261,
+        0.4714,  2.1185,  0.3278,  1.6173,  1.4035,  0.6626,  2.1958,  0.9927,
+        2.0128,  0.7033,  1.7453,  1.5363,  2.0599,  1.4108,  0.4994,  2.6295,
+        0.1331,  1.0371,  0.1240,  4.4307, 39.3291,  3.2622,  0.1602,  0.5710,
+        1.8344,  0.6735,  1.5298,  0.3408,  3.4526,  1.3502,  0.2089,  0.2379,
+        0.8030,  0.5171,  0.8304,  2.2832,  1.8513,  1.2998,  0.1819,  1.0530,
+        2.5713,  0.2715,  2.3887,  0.4140
+		};
+		float expected_se[] = {
+ 		6.7872,  8.1181,  4.9112,  4.9613,  7.2674,  7.4556,  4.4230, 47.7532,
+        7.8311,  3.1169,  6.4466,  6.6986
+		};
+		float expected_prob[] = {
+		0.0551, 0.1968, 0.0759, 0.2021, 0.4701, 0.0918, 0.0186, 0.3557, 0.0649,
+        0.4690, 0.0927, 0.6273, 0.0351, 0.1528, 0.0922, 0.0859, 0.0950, 0.4270,
+        0.0661, 0.3260, 0.1931, 0.0912, 0.3021, 0.1366, 0.2770, 0.0943, 0.2341,
+        0.2061, 0.2763, 0.1892, 0.1129, 0.5945, 0.0301, 0.2345, 0.0280, 0.0928,
+        0.8236, 0.0683, 0.0034, 0.0120, 0.2342, 0.0860, 0.1953, 0.0435, 0.4409,
+        0.4332, 0.0670, 0.0763, 0.2576, 0.1659, 0.1288, 0.3542, 0.2872, 0.2016,
+        0.0282, 0.1572, 0.3839, 0.0405, 0.3566, 0.0618
+		};
+
+		Tensor3 x =    tensor3_new(5, 4, 3, x_data);
+		Tensor3 e =    tensor3_exp(x);
+		Tensor3 se =   tensor3_sum(e, 1, e.d2, e.d3);
+		Tensor3 prob = tensor3_div(e, se);
+
+		test_assert(tensor3_same_shape(x, e));
+		test_assert(se.d1 == 1 && se.d2 == e.d2 && se.d3 == e.d3);
+		test_assert(tensor3_same_shape(x, prob));
+
+		tensor3_copy_gpu_to_cpu(e);
+		tensor3_copy_gpu_to_cpu(se);
+		tensor3_copy_gpu_to_cpu(prob);
+
+		{
+			float big_diff= 0;
+			for (int i = 0; i < e.d1 * e.d2 * e.d3; i++) {
+				float diff = abs(expected_e[i] - e.cpu_data[i]);
+				big_diff = max(big_diff, diff);
+			} 
+			if (big_diff >= 1e-2) {
+				printf("Diff = %.10f\n", big_diff);
+			}
+			test_assert(big_diff < 1e-2);
+		}
+		{
+			float big_diff= 0;
+			for (int i = 0; i < se.d1 * se.d2 * se.d3; i++) {
+				float diff = abs(expected_se[i] - se.cpu_data[i]);
+				big_diff = max(big_diff, diff);
+			} 
+			if (big_diff >= 1e-2) {
+				printf("Diff = %.10f\n", big_diff);
+			}
+			test_assert(big_diff < 1e-2);
+		}
+		{
+			float big_diff= 0;
+			for (int i = 0; i < prob.d1 * prob.d2 * prob.d3; i++) {
+				float diff = abs(expected_prob[i] - prob.cpu_data[i]);
+				big_diff = max(big_diff, diff);
+			} 
+			if (big_diff >= 1e-2) {
+				printf("Diff = %.10f\n", big_diff);
+			}
+			test_assert(big_diff < 1e-2);
+		}
+
+
+	}
+	return true;
+}
+
 int test_tensor3_broadcast() 
 {
 	{
@@ -94,6 +183,7 @@ int test_tensor3_broadcast()
 		for (int i = 0; i < ARRAY_SIZE(expected); i++) {
 			test_assert(c.cpu_data[i] == expected[i]);
 		}
+		tensor3_free(a); tensor3_free(c);
 	}
 	{
 		float data[] = {1, 2, 3};
@@ -109,6 +199,7 @@ int test_tensor3_broadcast()
 		for (int i = 0; i < ARRAY_SIZE(expected); i++) {
 			test_assert(c.cpu_data[i] == expected[i]);
 		}
+		tensor3_free(a); tensor3_free(c);
 	}
 	{
 		float data[] = {1, 2, 3};
@@ -123,7 +214,9 @@ int test_tensor3_broadcast()
 		for (int i = 0; i < ARRAY_SIZE(expected); i++) {
 			test_assert(c.cpu_data[i] == expected[i]);
 		}
+		tensor3_free(a); tensor3_free(c);
 	}
+	
 	return true;
 }
 
@@ -142,6 +235,8 @@ int test_tensor3_sum()
 		for (int i = 0; i < ARRAY_SIZE(expected); i++) {
 			test_assert(c.cpu_data[i] == expected[i]);
 		}
+
+		tensor3_free(a); tensor3_free(c);
 	}
 	{
 		float data[] = {1, 2, 3, 1, 2, 3};
@@ -156,6 +251,7 @@ int test_tensor3_sum()
 		for (int i = 0; i < ARRAY_SIZE(expected); i++) {
 			test_assert(c.cpu_data[i] == expected[i]);
 		}
+		tensor3_free(a); tensor3_free(c);
 	}
 	{
 		float data[] = {1, 2, 3, 1, 2, 3};
@@ -170,6 +266,7 @@ int test_tensor3_sum()
 		for (int i = 0; i < ARRAY_SIZE(expected); i++) {
 			test_assert(c.cpu_data[i] == expected[i]);
 		}
+		tensor3_free(a); tensor3_free(c);
 	}
 	return true;
 }
@@ -254,6 +351,7 @@ int main() {
 	cnt_error += !test_tensor3_matmul_1_1();
 	cnt_error += !test_tensor3_broadcast();
 	cnt_error += !test_tensor3_sum();
+	cnt_error += !test_tensor3_softmax();
 
 	if (cnt_error) {
 		fprintf(stderr, "%d tests failed, seed: %d\n", cnt_error, seed);
