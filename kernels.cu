@@ -191,3 +191,19 @@ __global__ void kernel_mul_scalar(float *c, float * a, float b,
 		a[KEY(ci3, ci2, ci1, cd3, cd2, cd1)] * b; 
 	}
 }
+
+
+/* === Others === */
+__global__ void kernel_one_hot(float *c, int* a,
+						       int cd1, int cd2, int cd3) 
+{
+	int ci3 = blockIdx.z * blockDim.z + threadIdx.z;
+	int ci2 = blockIdx.y * blockDim.y + threadIdx.y;
+	int ci1 = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (ci3 < cd3 && ci2 < cd2 && ci1 < cd1) {
+		float v = (a[KEY(1, ci2, ci1, 1, cd2, cd1)] == ci3 ? 1.0f : 0.0f);
+		
+		c[KEY(ci3, ci2, ci1, cd3, cd2, cd1)] = v;
+	}
+}

@@ -102,7 +102,7 @@ void tensor3_copy_cpu_to_gpu (Tensor3 t)
 void tensor3_show(Tensor3 t) 
 {
 	tensor3_copy_gpu_to_cpu(t);
-	printf("Tensor:\n");
+	printf("Tensor (%d, %d, %d):\n", t.d1, t.d2, t.d3);
 	for (int k = 0; k < t.d3; k++) {
 		printf("[ ");
 		for (int j = 0; j < t.d2; j++) {
@@ -235,7 +235,7 @@ Tensor3 tensor3_transpose(Tensor3 a, int dx, int dy)
 Tensor3 tensor3_view(Tensor3 a, int d1, int d2, int d3) 
 {
 	assert(d1*d2*d3 == a.d1*a.d2*a.d3);
-	sync(a);
+	tensor3_sync(a);
 	Tensor3 c = tensor3_new(d1, d2, d3);
 
 	cudaMemcpy(c.data, a.data, d1*d2*d3*sizeof(float), cudaMemcpyDeviceToDevice);
@@ -477,4 +477,15 @@ Tensor3 tensor3_mul_scalar(Tensor3 a, float b)
 
 	tensor3_unsync(&c);
 	return c;
+}
+
+Tensor3 tensor3_one_hot_cpu(int *arr, int B, int T, int A)
+{
+	float *res = (float *) malloc(B * T * A * sizeof(float));
+	for (int k = 0; k < B; k++)
+	for (int j = 0; j < T; j++)
+	for (int i = 0; i < A; i++) {
+		res[KEY(k, j, i, B, T, A)] = (arr[KEY(0, k, j, 0, B, T)] == i ? 1.0 : 0.0);
+	}
+	return tensor3_new(A, T, B, res);
 }
