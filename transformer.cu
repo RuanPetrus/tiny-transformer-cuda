@@ -5,7 +5,7 @@
 
 // x         @  w     + b = c
 // (B, N, K) @ (K, M) + (N) = (B, N, M)
-__global__ void kernel_matmul_bias_ll(
+__global__ void kernel_matmul_bias(
 		float *out, 
 		const float *x, 
 		const float *w,
@@ -21,6 +21,17 @@ __global__ void kernel_matmul_bias_ll(
 		}
 		out[in * M + im] = sum;
 	}
+}
+
+#define GELU_SCALING_FACTOR sqrtf(2.0f / M_PI)
+__global__ void kernel_gelu_forward(float* out, const float* x, int N) 
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) {
+        float xi = x[i];
+        float cube = 0.044715f * xi * xi * xi;
+        out[i] = 0.5f * xi * (1.0f + tanhf(GELU_SCALING_FACTOR * (xi + cube)));
+    }
 }
 
 int int_ceil(int a, int b) 
@@ -110,17 +121,27 @@ void matmul_forward(Model &model,
 	float *out = model.activation_allocator.alloc_float(N*M);
 	dim3 block_dim(32, 32);
 	dim3 grid_dim(int_ceil(M, 32), int_ceil(N, 32));
-	kernel_matmul_bias_ll<<<grid_dim, block_dim>>>(out, x, w, b, N, K, M);
+	kernel_matmul_bias<<<grid_dim, block_dim>>>(out, x, w, b, N, K, M);
 
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) {
 		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
 	}
+
 }
 
-size_t matmul_temp_size(int B, int N, int K, int M)
+void gelu_forward(Model &model,
+		const float *x, int N)
 {
-	return (size_t) B * N * K * M;
+	float *out = model.activation_allocator.alloc_float(N);
+	dim3 block_dim(32);
+	dim3 grid_dim(int_ceil(N, 32));
+	kernel_gelu_forward<<<grid_dim, block_dim>>>(out, x, N);
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
 }
 
 void feed_forward_forward(Model &model, 
@@ -132,11 +153,4 @@ void feed_forward_forward(Model &model,
 		B*sequence_len, model.config.dmodel, model.config.dff
 	);
 	float *out1 = (float *) model.activation_allocator.peek();
-}
-
-size_t feed_forward_temp_size(int B, int sequence_len, ModelConfig config)
-{
-	return matmul_temp_size(B, sequence_len, config.dmodel, config.dff) +
-		   matmul_temp_size(B, sequence_len, config.dff, config.dmodel);
-
 }

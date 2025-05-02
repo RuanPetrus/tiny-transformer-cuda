@@ -73,15 +73,33 @@ bool test_matmul()
 	TEST_COPY_ARRAY(b, b_exp);
 	cudaDeviceSynchronize();
 
-	// show_gpu_data(x, N*K);
-	// show_gpu_data(w, K*M);
-	// show_gpu_data(b, M);
-	// return true;
-
 	matmul_forward(test_model, x, w, b, N, K, M);
 	cudaDeviceSynchronize();
 	float *out = test_model.activation_allocator.peek_float();
 	return assert_close(out, out_exp, N*M);
+}
+
+bool test_gelu_forward()
+{
+	FILE *f = fopen(TEMP_PATH"gelu_forward.bin", "rb");
+	TEST_ASSERT(f != NULL, "Could not open test_gelu forward bin\n");
+
+	int N;
+	LOAD_VAR(N);
+
+	float x_exp[N];   LOAD_ARRAY(x_exp);
+	float out_exp[N]; LOAD_ARRAY(out_exp);
+	fclose(f);
+	test_model.activation_allocator.clean();
+
+	float *x = (float *) test_model.activation_allocator.alloc(sizeof(x_exp)); 
+	TEST_COPY_ARRAY(x, x_exp);
+	cudaDeviceSynchronize();
+
+	gelu_forward(test_model, x, N);
+	cudaDeviceSynchronize();
+	float *out = test_model.activation_allocator.peek_float();
+	return assert_close(out, out_exp, N);
 }
 
 #define TEMP_GPU_BUFFER_CAPACITY 1 << 20
@@ -103,6 +121,7 @@ int main()
 
 	int errors = 0;
 	errors += !test_matmul();
+	errors += !test_gelu_forward();
 
 	if (errors > 0) {
 		fprintf(stderr, "Tests failed with %d errors\n", errors);
