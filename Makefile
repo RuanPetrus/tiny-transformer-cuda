@@ -1,24 +1,21 @@
-.PHONY: all test test_run
+.PHONY: all test clean
 
-all: test build/run
+all: build/transformer
 
-test_run: test
-	build/test_tensor
-	build/test_nn
+CFLAGS="-Wall,-Wextra"
+NVCC_FLAGS=-std=c++17
 
-test: build/test_tensor build/test_nn
-
-build/test_tensor: test_tensor.cu tensor.cu
+build/transformer: transformer.cu
 	@mkdir -p $(dir $@)
-	nvcc test_tensor.cu -o $@
+	nvcc -Xcompiler $(CFLAGS) $(NVCC_FLAGS) $^ -o $@
 
-build/test_nn: test_nn.cu tensor.cu nn.cu
+build/test_against_numpy: test_against_numpy.cu transformer.cu
 	@mkdir -p $(dir $@)
-	nvcc test_nn.cu -o $@
+	nvcc -Xcompiler $(CFLAGS) $(NVCC_FLAGS) test_against_numpy.cu -o $@
 
-build/run: run.cu tensor.cu nn.cu
-	@mkdir -p $(dir $@)
-	nvcc run.cu -o $@
+test: build/test_against_numpy test_against_numpy.py
+	python3 test_against_numpy.py
+	./build/test_against_numpy
 
 clean:
 	rm -rf build
