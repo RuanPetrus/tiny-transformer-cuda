@@ -105,10 +105,19 @@ struct ModelConfig
 	int n_heads;
 };
 
+struct Parameters
+{
+	float *ffw0; // (n_block_layers, dmodel, dff)
+	float *ffb0; // (n_block_layers, dff)
+	float *ffw1; // (n_block_layers, dmff, dmodel)
+	float *ffb1; // (n_block_layers, dmodel)
+};
+
 struct Model 
 {
 	ModelConfig config;
 	StaticStackAllocator activation_allocator;
+	Parameters params;
 };
 
 /* Layer functions:
@@ -145,12 +154,29 @@ void gelu_forward(Model &model,
 }
 
 void feed_forward_forward(Model &model, 
-		const float *x, const float *w, const float*b, 
+		const float *x, int block_id, 
 		int B, int sequence_len)
 {
+	int T = sequence_len;
+	int C = model.config.dmodel;
+	int Cff = model.config.dff;
+	// Loading parameters
+	float *w0 = model.params.ffw0 + block_id * C * Cff;
+	float *b0 = model.params.ffb0 + block_id * Cff;
+	float *w1 = model.params.ffw1 + block_id * Cff * C;
+	float *b1 = model.params.ffb1 + block_id * C;
+
 	matmul_forward(
-		model, x, w, b,
-		B*sequence_len, model.config.dmodel, model.config.dff
+		model, x, w0, b0,
+		B*T, C, Cff
 	);
-	float *out1 = (float *) model.activation_allocator.peek();
+	float *out0 = (float *) model.activation_allocator.peek(); // (B, T, Cff)
+
+	gelu_forward(model, out0, B*T*Cff);
+	float *out1 = (float *) model.activation_allocator.peek(); // (B, T, Cff)
+
+	matmul_forward(
+		model, out1, w1, b1,
+		B*T, Cff, C
+	);
 }

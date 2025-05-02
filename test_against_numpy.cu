@@ -26,7 +26,6 @@ bool assert_close(float *gpu_data, float *exp, int n)
 		float diff = abs(data[i] - exp[i]);
 		TEST_ASSERT(diff < CLOSE_EPS, "Number are not close (i, diff) = (%d, %f)", i, diff);
 	}
-	printf("\n");
 	return true;
 }
 
@@ -102,6 +101,54 @@ bool test_gelu_forward()
 	return assert_close(out, out_exp, N);
 }
 
+bool test_ff_forward()
+{
+	const char *bin_path = TEMP_PATH"ff_forward.bin";
+	FILE *f = fopen(bin_path, "rb");
+	TEST_ASSERT(f != NULL, "Could not open bins file %s\n", bin_path);
+
+	int dmodel, dff, B, sequence_len;
+	LOAD_VAR(dmodel); LOAD_VAR(dff);
+	LOAD_VAR(B); LOAD_VAR(sequence_len);
+
+	float x_exp[B * sequence_len * dmodel];   LOAD_ARRAY(x_exp);
+	float w0_exp[dmodel*dff]; LOAD_ARRAY(w0_exp);
+	float b0_exp[dff];        LOAD_ARRAY(b0_exp);
+	float w1_exp[dmodel*dff]; LOAD_ARRAY(w1_exp);
+	float b1_exp[dmodel];     LOAD_ARRAY(b1_exp);
+	float out_exp[B * sequence_len * dmodel]; LOAD_ARRAY(out_exp);
+	fclose(f);
+
+	test_model.activation_allocator.clean();
+	
+	test_model.config.dmodel = dmodel;
+	test_model.config.dff = dff;
+
+	float *x = (float *) test_model.activation_allocator.alloc(sizeof(x_exp)); 
+	TEST_COPY_ARRAY(x, x_exp);
+
+
+	test_model.params.ffw0 = (float*) test_model.activation_allocator.alloc(sizeof(w0_exp));
+	test_model.params.ffb0 = (float*) test_model.activation_allocator.alloc(sizeof(b0_exp));
+	test_model.params.ffw1 = (float*) test_model.activation_allocator.alloc(sizeof(w1_exp));
+	test_model.params.ffb1 = (float*) test_model.activation_allocator.alloc(sizeof(b1_exp));
+
+	TEST_COPY_ARRAY(test_model.params.ffw0, w0_exp);
+	TEST_COPY_ARRAY(test_model.params.ffb0, b0_exp);
+	TEST_COPY_ARRAY(test_model.params.ffw1, w1_exp);
+	TEST_COPY_ARRAY(test_model.params.ffb1, b1_exp);
+
+	cudaDeviceSynchronize();
+
+	feed_forward_forward(test_model, 
+		x, 0, 
+		B, sequence_len);
+	cudaDeviceSynchronize();
+
+	float *out = test_model.activation_allocator.peek_float();
+	return assert_close(out, out_exp, sizeof(out_exp) / sizeof(float));
+}
+
 #define TEMP_GPU_BUFFER_CAPACITY 1 << 20
 #define TEMP_CPU_BUFFER_CAPACITY 1 << 20
 static char *temp_gpu_buffer;
@@ -122,6 +169,7 @@ int main()
 	int errors = 0;
 	errors += !test_matmul();
 	errors += !test_gelu_forward();
+	errors += !test_ff_forward();
 
 	if (errors > 0) {
 		fprintf(stderr, "Tests failed with %d errors\n", errors);
