@@ -149,6 +149,73 @@ bool test_ff_forward()
 	return assert_close(out, out_exp, sizeof(out_exp) / sizeof(float));
 }
 
+bool test_softmax_forward()
+{
+	const char *bin_path = TEMP_PATH"softmax_forward.bin";
+	FILE *f = fopen(bin_path, "rb");
+	TEST_ASSERT(f != NULL, "Could not open bins file %s\n", bin_path);
+
+	int N, M;
+	LOAD_VAR(N); LOAD_VAR(M);
+
+	float x_exp[N*M];   LOAD_ARRAY(x_exp);
+	float out_exp[N*M]; LOAD_ARRAY(out_exp);
+	fclose(f);
+	test_model.activation_allocator.clean();
+
+	float *x = (float *) test_model.activation_allocator.alloc(sizeof(x_exp)); 
+	TEST_COPY_ARRAY(x, x_exp);
+	cudaDeviceSynchronize();
+
+	softmax_forward(test_model, x, N, M);
+	cudaDeviceSynchronize();
+	float *out = test_model.activation_allocator.peek_float();
+	return assert_close(out, out_exp, sizeof(out_exp) / sizeof(float));
+}
+
+float cpu_sum(float *gpu_data, int n)
+{
+	float *data = temp_cpu_allocator.alloc_float(n);
+	cudaMemcpy(data, gpu_data, sizeof(float) * n, cudaMemcpyDeviceToHost);
+	float sum = 0;
+	for (int i = 0; i < n; i++) {
+		sum += data[i];
+	}
+	return sum;
+}
+
+bool test_crossentropy_forward()
+{
+	const char *bin_path = TEMP_PATH"crossentropy_forward.bin";
+	FILE *f = fopen(bin_path, "rb");
+	TEST_ASSERT(f != NULL, "Could not open bins file %s\n", bin_path);
+
+	int N, M;
+	LOAD_VAR(N); LOAD_VAR(M);
+
+	float x_exp[N*M];   LOAD_ARRAY(x_exp);
+	int y_exp[N];       LOAD_ARRAY(y_exp);
+	float out_exp[1];   LOAD_ARRAY(out_exp);
+	fclose(f);
+	test_model.activation_allocator.clean();
+
+	float *x = (float *) test_model.activation_allocator.alloc(sizeof(x_exp)); 
+	int   *y = (int *) test_model.activation_allocator.alloc(sizeof(y_exp)); 
+	TEST_COPY_ARRAY(x, x_exp);
+	TEST_COPY_ARRAY(y, y_exp);
+	cudaDeviceSynchronize();
+
+	crossentropy_forward(test_model, x, y, N, M);
+	float *out = test_model.activation_allocator.peek_float();
+	cudaDeviceSynchronize();
+
+	float mean = cpu_sum(out, N*M) / N;
+	float diff = abs(mean - out_exp[0]);
+
+	TEST_ASSERT(diff < CLOSE_EPS, "Values are not close (%.4f, %.4f)\n", mean, out_exp[0]);
+	return true;
+}
+
 #define TEMP_GPU_BUFFER_CAPACITY 1 << 20
 #define TEMP_CPU_BUFFER_CAPACITY 1 << 20
 static char *temp_gpu_buffer;
@@ -170,6 +237,8 @@ int main()
 	errors += !test_matmul();
 	errors += !test_gelu_forward();
 	errors += !test_ff_forward();
+	errors += !test_softmax_forward();
+	errors += !test_crossentropy_forward();
 
 	if (errors > 0) {
 		fprintf(stderr, "Tests failed with %d errors\n", errors);

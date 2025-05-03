@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <assert.h>
+#include <float.h>
 
 #define ERROR(message, ...) do { fprintf(stderr, message, ##__VA_ARGS__); abort(); } while(0)
 
@@ -31,6 +32,33 @@ __global__ void kernel_gelu_forward(float* out, const float* x, int N)
         float xi = x[i];
         float cube = 0.044715f * xi * xi * xi;
         out[i] = 0.5f * xi * (1.0f + tanhf(GELU_SCALING_FACTOR * (xi + cube)));
+    }
+}
+
+__global__ void kernel_softmax_forward(float* out, const float* x, int N, int M) 
+{
+    int in = blockIdx.y * blockDim.y + threadIdx.y;
+    int im = blockIdx.x * blockDim.x + threadIdx.x;
+    if (in < N && im < M) {
+		float mx =  FLT_MIN;
+		for (int i = 0; i < M; i++) {
+			mx = max(mx, x[in*M + i]);
+		}
+		float sum = 0.0;
+		for (int i = 0; i < M; i++) {
+			sum += exp(x[in*M + i] - mx);
+		}
+		out[in * M + im] = exp(x[in * M + im] - mx) / sum;
+    }
+}
+
+__global__ void kernel_crossentropy_forward(float* out, const float *x, const int *y, int N, int M) 
+{
+    int in = blockIdx.y * blockDim.y + threadIdx.y;
+    int im = blockIdx.x * blockDim.x + threadIdx.x;
+    if (in < N && im < M) {
+		int ix = y[in];
+		out[in * M + im] = -log(x[in * M + im]) * (ix == im);
     }
 }
 
@@ -153,6 +181,20 @@ void gelu_forward(Model &model,
 	}
 }
 
+void softmax_forward(Model &model,
+		const float *x, int N, int M)
+{
+	float *out = model.activation_allocator.alloc_float(N * M);
+	dim3 block_dim(32, 32);
+	dim3 grid_dim(int_ceil(M, 32), int_ceil(N, 32));
+	kernel_softmax_forward<<<grid_dim, block_dim>>>(out, x, N, M);
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+}
+
 void feed_forward_forward(Model &model, 
 		const float *x, int block_id, 
 		int B, int sequence_len)
@@ -171,12 +213,37 @@ void feed_forward_forward(Model &model,
 		B*T, C, Cff
 	);
 	float *out0 = (float *) model.activation_allocator.peek(); // (B, T, Cff)
+	cudaDeviceSynchronize();
 
 	gelu_forward(model, out0, B*T*Cff);
 	float *out1 = (float *) model.activation_allocator.peek(); // (B, T, Cff)
+	cudaDeviceSynchronize();
 
 	matmul_forward(
 		model, out1, w1, b1,
 		B*T, Cff, C
 	);
+}
+
+void crossentropy_forward(Model &model, 
+		const float *x, const int *y, 
+		int N, int M)
+{
+	
+	softmax_forward(
+		model, x,
+		N, M
+	);
+	float *probs = (float *) model.activation_allocator.peek(); // (B, T, Cff)
+	cudaDeviceSynchronize();
+
+	float *out = model.activation_allocator.alloc_float(N * M);
+	dim3 block_dim(32, 32);
+	dim3 grid_dim(int_ceil(M, 32), int_ceil(N, 32));
+	kernel_crossentropy_forward<<<grid_dim, block_dim>>>(out, probs, y, N, M);
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
 }
