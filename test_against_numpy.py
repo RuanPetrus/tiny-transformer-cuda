@@ -40,7 +40,6 @@ def test_gelu_forward():
         x.tofile(f)
         out.tofile(f)
 
-
 def test_ff_forward():
     dmodel = 10
     dff = 4 * dmodel
@@ -90,13 +89,14 @@ def test_softmax_forward():
 
 def test_crossentropy_forward():
     N = 2
-    M = 2
+    M = 3
 
     x = np.random.randn(N, M).astype(np.float32)
     y = np.random.randint(0, M, size=(N)).astype(np.int32)
 
     probs = softmax(x)
     yprobs = probs[np.arange(N), y]
+
     lyprobs = -np.log(yprobs)
     out = lyprobs.mean()
 
@@ -107,12 +107,58 @@ def test_crossentropy_forward():
         y.tofile(f)
         out.tofile(f)
 
+def test_layernorm_forward():
+    N = 25
+    M = 12
+
+    x = np.random.randn(N, M).astype(np.float32)
+    w = np.random.randn(M).astype(np.float32)
+    b = np.random.randn(M).astype(np.float32)
+
+    eps = 10**(-5)
+    var = x.var(-1, keepdims=True)
+    mean = x.mean(-1, keepdims=True)
+
+    n = (x - mean) / (var + eps)**(0.5)
+    out = n * w + b
+
+    with open(TEMP_PATH + "layernorm_forward.bin", "wb") as f:
+        f.write(N.to_bytes(4, byteorder='little', signed=True))
+        f.write(M.to_bytes(4, byteorder='little', signed=True))
+        x.tofile(f)
+        w.tofile(f)
+        b.tofile(f)
+        out.tofile(f)
+
+def test_encoder_forward():
+    B = 10
+    T = 7
+    A = 6
+    C = 20
+
+    x  = np.random.randint(0, A, size=(B, T)).astype(np.int32)
+    w  = np.random.randn(A, C).astype(np.float32)
+    wp = np.random.randn(T, C).astype(np.float32)
+    out = w[x, :] + wp[np.arange(T)]
+
+    with open(TEMP_PATH + "encoder_forward.bin", "wb") as f:
+        f.write(B.to_bytes(4, byteorder='little', signed=True))
+        f.write(T.to_bytes(4, byteorder='little', signed=True))
+        f.write(A.to_bytes(4, byteorder='little', signed=True))
+        f.write(C.to_bytes(4, byteorder='little', signed=True))
+        x.tofile(f)
+        w.tofile(f)
+        wp.tofile(f)
+        out.tofile(f)
+
 def main():
     test_matmul()
     test_gelu_forward()
     test_ff_forward()
     test_softmax_forward()
     test_crossentropy_forward()
+    test_layernorm_forward()
+    test_encoder_forward()
 
 if __name__ == "__main__":
     main()

@@ -62,6 +62,46 @@ __global__ void kernel_crossentropy_forward(float* out, const float *x, const in
     }
 }
 
+#define LAYER_NORM_EPS 1e-5
+__global__ void kernel_layernorm_forward(float* out, 
+										 const float *x, const float *w, const float *b,
+		                                int N, int M) 
+{
+    int in = blockIdx.y * blockDim.y + threadIdx.y;
+    int im = blockIdx.x * blockDim.x + threadIdx.x;
+    if (in < N && im < M) {
+		float m = 0;
+		for (int i = 0; i < M; i++) {
+			m += x[in * M + i];
+		}
+		m /= M;
+		float var = 0;
+		for (int i = 0; i < M; i++) {
+			float diff = x[in * M + i] - m;
+			var += diff * diff;
+		}
+		var /= M;
+		float s = rsqrtf(var + LAYER_NORM_EPS);
+
+		float nr = (x[in * M + im] - m) * s;
+		out[in * M + im] = nr * w[im] + b[im];
+    }
+}
+
+__global__ void kernel_encoder_forward(float* out, 
+									   const int *x, const float *w, const float *wp,
+		                               int B, int T, int C) 
+{
+	// out = (B, T, C) x = (B, T), w = (A, C), wp = (T, C)
+    int ib = blockIdx.z * blockDim.z + threadIdx.z;
+    int it = blockIdx.y * blockDim.y + threadIdx.y;
+    int ic = blockIdx.x * blockDim.x + threadIdx.x;
+    if (ib < B && it < T && ic < C) {
+		int ix = x[ib * T + it];
+		out[ib*T*C + it*C + ic] = w[ix * C + ic] + wp[it * C + ic];
+    }
+}
+
 int int_ceil(int a, int b) 
 {
 	return (a +b -1) / b;
@@ -139,6 +179,8 @@ struct Parameters
 	float *ffb0; // (n_block_layers, dff)
 	float *ffw1; // (n_block_layers, dmff, dmodel)
 	float *ffb1; // (n_block_layers, dmodel)
+	float *ln1w; // (n_block_layers, dmodel)
+	float *ln1b; // (n_block_layers, dmodel)
 };
 
 struct Model 
@@ -241,6 +283,39 @@ void crossentropy_forward(Model &model,
 	dim3 block_dim(32, 32);
 	dim3 grid_dim(int_ceil(M, 32), int_ceil(N, 32));
 	kernel_crossentropy_forward<<<grid_dim, block_dim>>>(out, probs, y, N, M);
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+}
+
+void layernorm_forward(Model &model, 
+		const float *x, const float *w, const float *b,
+		int N, int M)
+{
+	
+	float *out = model.activation_allocator.alloc_float(N * M);
+	dim3 block_dim(32, 32);
+	dim3 grid_dim(int_ceil(M, 32), int_ceil(N, 32));
+	kernel_layernorm_forward<<<grid_dim, block_dim>>>(out, x, w, b, N, M);
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+}
+
+void encoder_forward(Model &model, 
+		const int *x, const float *w, const float *wp,
+		int B, int T)
+{
+	
+	int C = model.config.dmodel;
+	float *out = model.activation_allocator.alloc_float(B * T * C);
+	dim3 block_dim(1 << 3, 1 << 3, 1 << 4);
+	dim3 grid_dim(int_ceil(C, block_dim.x), int_ceil(T, block_dim.y), int_ceil(B, block_dim.z));
+	kernel_encoder_forward<<<grid_dim, block_dim>>>(out, x, w, wp, B, T, C);
 
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) {

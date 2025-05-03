@@ -216,6 +216,70 @@ bool test_crossentropy_forward()
 	return true;
 }
 
+bool test_layernorm_forward()
+{
+	const char *bin_path = TEMP_PATH"layernorm_forward.bin";
+	FILE *f = fopen(bin_path, "rb");
+	TEST_ASSERT(f != NULL, "Could not open bins file %s\n", bin_path);
+
+	int N, M;
+	LOAD_VAR(N); LOAD_VAR(M);
+
+	float x_exp[N*M];   LOAD_ARRAY(x_exp);
+	float w_exp[M];     LOAD_ARRAY(w_exp);
+	float b_exp[M];     LOAD_ARRAY(b_exp);
+	float out_exp[N*M]; LOAD_ARRAY(out_exp);
+	fclose(f);
+	test_model.activation_allocator.clean();
+
+	float *x = (float *) test_model.activation_allocator.alloc(sizeof(x_exp)); 
+	float *w = (float *) test_model.activation_allocator.alloc(sizeof(w_exp)); 
+	float *b = (float *) test_model.activation_allocator.alloc(sizeof(b_exp)); 
+	TEST_COPY_ARRAY(x, x_exp);
+	TEST_COPY_ARRAY(w, w_exp);
+	TEST_COPY_ARRAY(b, b_exp);
+	cudaDeviceSynchronize();
+
+	layernorm_forward(test_model, x, w, b, N, M);
+	float *out = test_model.activation_allocator.peek_float();
+	cudaDeviceSynchronize();
+	return assert_close(out, out_exp, sizeof(out_exp) / sizeof(float));
+}
+
+bool test_encoder_forward()
+{
+	const char *bin_path = TEMP_PATH"encoder_forward.bin";
+	FILE *f = fopen(bin_path, "rb");
+	TEST_ASSERT(f != NULL, "Could not open bins file %s\n", bin_path);
+
+	int B, T, A, C;
+	LOAD_VAR(B); LOAD_VAR(T); 
+	LOAD_VAR(A); LOAD_VAR(C);
+
+	int x_exp[B*T];       LOAD_ARRAY(x_exp);
+	float w_exp[A*C];     LOAD_ARRAY(w_exp);
+	float wp_exp[T*C];    LOAD_ARRAY(wp_exp);
+	float out_exp[B*T*C]; LOAD_ARRAY(out_exp);
+
+	fclose(f);
+	test_model.activation_allocator.clean();
+	test_model.config.dmodel = C;
+	test_model.config.vocab_size = A;
+
+	int *x = (int *) test_model.activation_allocator.alloc(sizeof(x_exp)); 
+	float *w = (float *) test_model.activation_allocator.alloc(sizeof(w_exp)); 
+	float *wp =(float *) test_model.activation_allocator.alloc(sizeof(wp_exp)); 
+	TEST_COPY_ARRAY(x, x_exp);
+	TEST_COPY_ARRAY(w, w_exp);
+	TEST_COPY_ARRAY(wp, wp_exp);
+	cudaDeviceSynchronize();
+
+	encoder_forward(test_model, x, w, wp, B, T);
+	float *out = test_model.activation_allocator.peek_float();
+	cudaDeviceSynchronize();
+	return assert_close(out, out_exp, sizeof(out_exp) / sizeof(float));
+}
+
 #define TEMP_GPU_BUFFER_CAPACITY 1 << 20
 #define TEMP_CPU_BUFFER_CAPACITY 1 << 20
 static char *temp_gpu_buffer;
@@ -239,6 +303,8 @@ int main()
 	errors += !test_ff_forward();
 	errors += !test_softmax_forward();
 	errors += !test_crossentropy_forward();
+	errors += !test_layernorm_forward();
+	errors += !test_encoder_forward();
 
 	if (errors > 0) {
 		fprintf(stderr, "Tests failed with %d errors\n", errors);
