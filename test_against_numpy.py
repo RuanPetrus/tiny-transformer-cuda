@@ -69,7 +69,7 @@ def test_ff_forward():
         out.tofile(f)
 
 def softmax(x):
-    mx = x.max()
+    mx = x.max(-1, keepdims=True)
     x = x - mx
     ex = np.exp(x)
     return ex / ex.sum(-1, keepdims=True)
@@ -151,6 +151,28 @@ def test_encoder_forward():
         wp.tofile(f)
         out.tofile(f)
 
+def test_flash_attn_forward():
+    B = 5
+    N = 1 << 10
+    d = 1 << 10
+
+    q  = np.random.randn(B, N, d).astype(np.float32)
+    k  = np.random.randn(B, N, d).astype(np.float32)
+    v  = np.random.randn(B, N, d).astype(np.float32)
+
+    attn = q@k.transpose(0, 2, 1)
+    eattn = softmax(attn)
+    out = eattn @ v
+
+    with open(TEMP_PATH + "flash_attn_forward.bin", "wb") as f:
+        f.write(B.to_bytes(4, byteorder='little', signed=True))
+        f.write(N.to_bytes(4, byteorder='little', signed=True))
+        f.write(d.to_bytes(4, byteorder='little', signed=True))
+        q.tofile(f)
+        k.tofile(f)
+        v.tofile(f)
+        out.tofile(f)
+
 def main():
     test_matmul()
     test_gelu_forward()
@@ -159,6 +181,7 @@ def main():
     test_crossentropy_forward()
     test_layernorm_forward()
     test_encoder_forward()
+    test_flash_attn_forward()
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "transformer.cu"
+#include <chrono>
 
 #define TEMP_PATH "/tmp/tiny_transformer_test_"
 #define TEST_ASSERT(expr, message, ...) do  { \
@@ -11,20 +12,23 @@ if (!(expr)) { \
 
 #define LOAD_VAR(x)   TEST_ASSERT(sizeof(x) == fread(&x, 1, sizeof(x), f), "Test bin format is wrong\n");
 #define LOAD_ARRAY(x) TEST_ASSERT(sizeof(x) == fread(x, 1, sizeof(x), f), "Test bin format is wrong\n");
+#define LOAD_PTR(x, sz) TEST_ASSERT((sz) == fread(x, 1, (sz), f), "Test bin format is wrong\n");
+
 
 #define TEST_COPY_ARRAY(x, x_exp) cudaMemcpy(x, x_exp, sizeof(x_exp), cudaMemcpyHostToDevice)
+#define TEST_COPY_PTR(x, x_exp, sz) cudaMemcpy(x, x_exp, (sz), cudaMemcpyHostToDevice)
 
 static Model test_model;
 StaticStackAllocator temp_cpu_allocator;
 
 #define CLOSE_EPS 1e-4
-bool assert_close(float *gpu_data, float *exp, int n)
+bool assert_close(float *gpu_data, float *exp, int n, float eps = CLOSE_EPS)
 {
 	float *data = temp_cpu_allocator.alloc_float(n);
 	cudaMemcpy(data, gpu_data, sizeof(float) * n, cudaMemcpyDeviceToHost);
 	for (int i = 0; i < n; i++) {
 		float diff = abs(data[i] - exp[i]);
-		TEST_ASSERT(diff < CLOSE_EPS, "Number are not close (i, diff) = (%d, %f)", i, diff);
+		TEST_ASSERT(diff < eps, "Number are not close (i, diff) = (%d, %f)", i, diff);
 	}
 	return true;
 }
@@ -280,8 +284,62 @@ bool test_encoder_forward()
 	return assert_close(out, out_exp, sizeof(out_exp) / sizeof(float));
 }
 
-#define TEMP_GPU_BUFFER_CAPACITY 1 << 20
-#define TEMP_CPU_BUFFER_CAPACITY 1 << 20
+bool test_flash_attn_forward()
+{
+	const char *bin_path = TEMP_PATH"flash_attn_forward.bin";
+	FILE *f = fopen(bin_path, "rb");
+	TEST_ASSERT(f != NULL, "Could not open bins file %s\n", bin_path);
+
+	test_model.activation_allocator.clean();
+	temp_cpu_allocator.clean();
+
+	int B, N, d;
+	LOAD_VAR(B); LOAD_VAR(N); LOAD_VAR(d);
+
+	float *q_exp =   temp_cpu_allocator.alloc_float(B*N*d);
+	float *k_exp =   temp_cpu_allocator.alloc_float(B*N*d);
+	float *v_exp =   temp_cpu_allocator.alloc_float(B*N*d);
+	float *out_exp = temp_cpu_allocator.alloc_float(B*N*d);
+
+	LOAD_PTR(q_exp,   B*N*d*sizeof(float));
+	LOAD_PTR(k_exp,   B*N*d*sizeof(float));
+	LOAD_PTR(v_exp,   B*N*d*sizeof(float));
+	LOAD_PTR(out_exp, B*N*d*sizeof(float));
+
+	fclose(f);
+
+	float *q = test_model.activation_allocator.alloc_float(B*N*d); 
+	float *k = test_model.activation_allocator.alloc_float(B*N*d); 
+	float *v = test_model.activation_allocator.alloc_float(B*N*d); 
+
+	TEST_COPY_PTR(q, q_exp, B*N*d*sizeof(float));
+	TEST_COPY_PTR(k, k_exp, B*N*d*sizeof(float));
+	TEST_COPY_PTR(v, v_exp, B*N*d*sizeof(float));
+	cudaDeviceSynchronize();
+
+	auto start = std::chrono::steady_clock::now();
+
+
+	flash_attn_forward(test_model, q, k, v, B, N, d);
+	float *out = test_model.activation_allocator.peek_float();
+	cudaDeviceSynchronize();
+
+	auto stop = std::chrono::steady_clock::now();
+
+	auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start);
+	long double duration_nano = duration.count();
+	double gflop = B*(
+		  ((double) N * N * 2*d) // s = q @ k
+		+ ((double) N*N + N*N + N*N + N*N + N*N)  // attn = softmax(s)
+		+ ((double) N * d * 2*N)); // out = attn @ v
+	double gflops = gflop / duration_nano;
+	printf("Foward Attention Gflops = %lf\n", gflops);
+
+	return assert_close(out, out_exp, B*N*d, 1e-3);
+}
+
+#define TEMP_GPU_BUFFER_CAPACITY 1 << 30
+#define TEMP_CPU_BUFFER_CAPACITY 1 << 30
 static char *temp_gpu_buffer;
 static char temp_cpu_buffer[TEMP_CPU_BUFFER_CAPACITY];
 
@@ -305,6 +363,7 @@ int main()
 	errors += !test_crossentropy_forward();
 	errors += !test_layernorm_forward();
 	errors += !test_encoder_forward();
+	errors += !test_flash_attn_forward();
 
 	if (errors > 0) {
 		fprintf(stderr, "Tests failed with %d errors\n", errors);

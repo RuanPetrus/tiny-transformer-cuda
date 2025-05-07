@@ -102,6 +102,96 @@ __global__ void kernel_encoder_forward(float* out,
     }
 }
 
+#define FLASH_ATTN_BR (1 << 4)
+#define FLASH_ATTN_BC (1 << 4)
+
+// N and D must be multiples of FLASH_ATTN_BC and FLASH_ATTN_BR
+__global__ void kernel_flash_attn_forward(float* out, 
+									      const float *q, const float *k, const float *v,
+		                                  int B, int N, int D) 
+{
+	// B = batch * n_heads
+    int ib = blockIdx.y;
+    int bidx = blockIdx.x;
+
+	int tix = threadIdx.x % FLASH_ATTN_BC;
+	int tiy = threadIdx.x / FLASH_ATTN_BC;
+
+	out += ib * N * D + bidx * FLASH_ATTN_BR * D;
+
+	const float *q_ptr = q + ib * N *D + bidx * FLASH_ATTN_BR * D;
+	const float *k_ptr = k + ib * N *D;
+	const float *v_ptr = v + ib * N *D;
+
+	__shared__ float mx[FLASH_ATTN_BR];
+	__shared__ float old_mx[FLASH_ATTN_BR];
+	__shared__ float l[FLASH_ATTN_BR];
+	__shared__ float s[FLASH_ATTN_BR * FLASH_ATTN_BC];
+
+	// first thread of row
+	if (tix == 0) {
+		mx[tiy] = -FLT_MAX;
+		l[tiy] = 0;
+	}
+	
+	for (int j = 0; j < N/FLASH_ATTN_BC; j++) {
+		// Calculating s = q @ k.T
+		{
+			float sum = 0;
+			for (int z = 0; z < D; z++) {
+				sum += q_ptr[tiy * D + z] * k_ptr[tix * D + z];
+			}
+			s[tiy * FLASH_ATTN_BC + tix] = sum;
+		}
+		__syncthreads();
+		// Calculating and fixing l and mx
+		if (tix == 0) {
+			float mxv = mx[tiy];
+			for (int z = 0; z < FLASH_ATTN_BC; z++) {
+				mxv = max(mxv, s[tiy * FLASH_ATTN_BC + z]);
+			}
+			old_mx[tiy] = mx[tiy];
+			mx[tiy] = mxv;
+			float sum = 0;
+			for (int z = 0; z < FLASH_ATTN_BC; z++) {
+				float x = exp(s[tiy * FLASH_ATTN_BC + z] - mx[tiy]);
+				s[tiy * FLASH_ATTN_BC + z] = x;
+				sum += x;
+			}
+			l[tiy] = l[tiy] * exp(old_mx[tiy] - mx[tiy]) + sum;
+		}
+		__syncthreads();
+
+		// Calculating fix(out) + s @ v
+		float *mo = out;
+		const float *mv = v_ptr;
+		for (int z = 0; z < D/FLASH_ATTN_BC; z++) {
+			float sum = 0;
+			for (int w = 0; w < FLASH_ATTN_BC; w++) {
+				sum += s[tiy * FLASH_ATTN_BC + w] * mv[w * D + tix];
+			}
+
+			float corr_v = (j > 0 
+					? mo[tiy * D + tix] * exp(old_mx[tiy] - mx[tiy])
+					: 0);
+			mo[tiy * D + tix] = corr_v + sum;
+
+			mo += FLASH_ATTN_BC;
+			mv += FLASH_ATTN_BC;
+		}
+		__syncthreads();
+
+		k_ptr += FLASH_ATTN_BC * D;
+		v_ptr += FLASH_ATTN_BC * D;
+	}
+	// Dividing O by L
+	float *mo = out;
+	for (int z = 0; z < D/FLASH_ATTN_BC; z++) {
+		mo[tiy * D + tix] /= l[tiy];
+		mo += FLASH_ATTN_BC;
+	}
+}
+
 int int_ceil(int a, int b) 
 {
 	return (a +b -1) / b;
@@ -316,6 +406,21 @@ void encoder_forward(Model &model,
 	dim3 block_dim(1 << 3, 1 << 3, 1 << 4);
 	dim3 grid_dim(int_ceil(C, block_dim.x), int_ceil(T, block_dim.y), int_ceil(B, block_dim.z));
 	kernel_encoder_forward<<<grid_dim, block_dim>>>(out, x, w, wp, B, T, C);
+
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		ERROR("Kernel launch failed: %s", cudaGetErrorString(err));
+	}
+}
+void flash_attn_forward(Model &model, 
+		const float *q, const float *k, const float *v,
+		int B, int N, int D)
+{
+	
+	float *out = model.activation_allocator.alloc_float(B * N *D);
+	dim3 block_dim(FLASH_ATTN_BR * FLASH_ATTN_BC, 1);
+	dim3 grid_dim(int_ceil(N, FLASH_ATTN_BR), B);
+	kernel_flash_attn_forward<<<grid_dim, block_dim>>>(out, q, k, v, B, N, D);
 
 	cudaError_t err = cudaGetLastError();
 	if (err != cudaSuccess) {
