@@ -88,8 +88,8 @@ def test_softmax_forward():
         out.tofile(f)
 
 def test_crossentropy_forward():
-    N = 2
-    M = 3
+    N = 20
+    M = 40
 
     x = np.random.randn(N, M).astype(np.float32)
     y = np.random.randint(0, M, size=(N)).astype(np.int32)

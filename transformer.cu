@@ -40,7 +40,7 @@ __global__ void kernel_softmax_forward(float* out, const float* x, int N, int M)
     int in = blockIdx.y * blockDim.y + threadIdx.y;
     int im = blockIdx.x * blockDim.x + threadIdx.x;
     if (in < N && im < M) {
-		float mx =  FLT_MIN;
+		float mx = -FLT_MAX;
 		for (int i = 0; i < M; i++) {
 			mx = max(mx, x[in*M + i]);
 		}
